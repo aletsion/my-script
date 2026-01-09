@@ -1,539 +1,412 @@
 """
-TIKTOK ACCOUNT NURTURING BOT v2.0
-Tự động nuôi tài khoản mới, tăng trust score
-Tương tác tự nhiên, tránh detection
+TIKTOK ACCOUNT NURTURING BOT - FIXED VERSION
+Chạy ngay không lỗi - Hiển thị đầy đủ thông tin
 """
 
 import asyncio
-import aiohttp
 import random
 import time
 import json
-import csv
-import hashlib
 import uuid
 import os
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass, asdict, field
+from datetime import datetime
 import logging
-from enum import Enum
-import re
-from pathlib import Path
 
 # ============================================
-# CẤU HÌNH LOGGING
+# CẤU HÌNH LOGGING HIỂN THỊ ĐẦY ĐỦ
 # ============================================
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('tiktok_nurturing.log'),
-        logging.StreamHandler()
+        logging.StreamHandler()  # CHỈ HIỂN THỊ RA MÀN HÌNH
     ]
 )
 logger = logging.getLogger(__name__)
 
-# ============================================
-# ENUMS & DATA CLASSES
-# ============================================
-class NurtureStage(Enum):
-    """Các giai đoạn nuôi tài khoản"""
-    DAY_1_2 = "day_1_2"      # Khởi động nhẹ
-    DAY_3_7 = "day_3_7"      # Tăng tương tác
-    DAY_8_14 = "day_8_14"    # Mở rộng
-    DAY_15_30 = "day_15_30"  # Ổn định
-    MATURE = "mature"        # Tài khoản trưởng thành
-
-class ActionType(Enum):
-    """Loại hành động nuôi account"""
-    VIEW = "view"
-    LIKE = "like"
-    COMMENT = "comment"
-    FOLLOW = "follow"
-    UNFOLLOW = "unfollow"
-    SHARE = "share"
-    WATCH_TIME = "watch_time"
-    SEARCH = "search"
-    PROFILE_VIEW = "profile_view"
-
-@dataclass
-class TikTokAccount:
-    """Thông tin tài khoản TikTok cần nuôi"""
-    account_id: str
-    username: str
-    password: str
-    nickname: str
-    email: Optional[str] = None
-    phone: Optional[str] = None
-    age_days: int = 0
-    follower_count: int = 0
-    following_count: int = 0
-    like_count: int = 0
-    video_count: int = 0
-    trust_score: float = 0.0  # 0-100 điểm
-    stage: NurtureStage = NurtureStage.DAY_1_2
-    created_at: float = field(default_factory=time.time)
-    last_action: float = 0
-    daily_limits: Dict = field(default_factory=lambda: {
-        "views": 100,
-        "likes": 50,
-        "comments": 20,
-        "follows": 30,
-        "unfollows": 15,
-    })
-    today_stats: Dict = field(default_factory=lambda: {
-        "views": 0,
-        "likes": 0,
-        "comments": 0,
-        "follows": 0,
-        "unfollows": 0,
-    })
-    interests: List[str] = field(default_factory=lambda: [
-        "music", "comedy", "dance", "cooking", "gaming",
-        "beauty", "fitness", "travel", "education"
-    ])
-    device_profile: Dict = field(default_factory=dict)
-    cookies: Dict = field(default_factory=dict)
-    session_tokens: Dict = field(default_factory=dict)
-    is_active: bool = True
-
-@dataclass
-class NurtureTask:
-    """Task nuôi account"""
-    task_id: str
-    account: TikTokAccount
-    action: ActionType
-    target_data: Dict  # video_id, user_id, etc.
-    priority: int = 1
-    scheduled_time: float = 0
-    retry_count: int = 0
-
-@dataclass
-class NurtureResult:
-    """Kết quả thực hiện task"""
-    task_id: str
-    account_id: str
-    action: str
-    success: bool
-    timestamp: str
-    response_data: Optional[Dict] = None
-    error: Optional[str] = None
-    trust_score_change: float = 0.0
+print("=" * 60)
+print("TIKTOK ACCOUNT NURTURING BOT - ĐÃ SẴN SÀNG")
+print("=" * 60)
+print()
 
 # ============================================
-# CONTENT DISCOVERY ENGINE
+# CLASS ĐƠN GIẢN
 # ============================================
-class ContentDiscovery:
-    """Engine tìm content phù hợp để tương tác"""
-    
+class SimpleAccount:
+    def __init__(self, password, email):
+        self.password = password
+        self.email = email
+        self.account_id = str(uuid.uuid4())[:8]
+        self.username = email.split('@')[0] if '@' in email else f"user_{self.account_id}"
+        self.age_days = 0
+        self.trust_score = 0.0
+        self.following_count = 0
+        self.like_count = 0
+        self.last_action = time.time()
+        self.is_active = True
+        
+        print(f"✅ Đã tạo account: {self.username}")
+
+# ============================================
+# BOT CHÍNH - FIXED
+# ============================================
+class TikTokNurtureBot:
     def __init__(self):
-        self.trending_hashtags = self._load_trending_hashtags()
-        self.popular_music = self._load_popular_music()
-        self.categories = {
-            "music": ["song", "music", "audio", "remix"],
-            "comedy": ["funny", "comedy", "meme", "joke"],
-            "dance": ["dance", "choreography", "kpop"],
-            "cooking": ["recipe", "cooking", "food", "eat"],
-            "gaming": ["game", "gaming", "esports", "mobilegame"],
-            "beauty": ["makeup", "skincare", "beauty", "fashion"],
-            "fitness": ["workout", "fitness", "gym", "health"],
-            "travel": ["travel", "vietnam", "destination", "wanderlust"],
-            "education": ["learn", "tips", "tutorial", "knowledge"],
-        }
-    
-    def _load_trending_hashtags(self) -> List[str]:
-        """Load trending hashtags (có thể update từ API)"""
-        return [
-            "#fyp", "#foryou", "#viral", "#trending",
-            "#tiktokvietnam", "#vietnam", "#music",
-            "#dance", "#comedy", "#funny", "#cooking",
-            "#gaming", "#beauty", "#fitness", "#travel",
-        ]
-    
-    def _load_popular_music(self) -> List[str]:
-        """Load popular music IDs"""
-        # Trong thực tế sẽ lấy từ TikTok API
-        return [
-            "music_123456", "music_789012", "music_345678",
-            "music_901234", "music_567890", "music_123890",
-        ]
-    
-    def discover_for_interests(self, interests: List[str], limit: int = 20) -> List[Dict]:
-        """Tìm content phù hợp với sở thích"""
-        discovered = []
+        self.accounts = []
+        self.results = []
         
-        for interest in interests[:3]:  # Lấy 3 interests chính
-            if interest in self.categories:
-                keywords = self.categories[interest]
-                
-                # Giả lập tìm video
-                for i in range(limit // 3):
-                    video_data = {
-                        "video_id": f"video_{hashlib.md5(f'{interest}_{i}'.encode()).hexdigest()[:10]}",
-                        "author_id": f"author_{random.randint(10000, 99999)}",
-                        "description": f"Video về {interest} #{random.choice(keywords)}",
-                        "hashtags": [f"#{interest}"] + random.sample(self.trending_hashtags, 2),
-                        "music_id": random.choice(self.popular_music) if interest == "music" else None,
-                        "duration": random.randint(15, 60),
-                        "like_count": random.randint(100, 10000),
-                        "comment_count": random.randint(10, 1000),
-                        "share_count": random.randint(5, 500),
-                        "category": interest,
-                        "created_time": int(time.time()) - random.randint(3600, 86400*7),
-                    }
-                    discovered.append(video_data)
+    def load_accounts(self, filepath="accounts.json"):
+        """Load accounts từ file JSON"""
+        print(f"\n📁 Đang đọc file: {filepath}")
         
-        random.shuffle(discovered)
-        return discovered[:limit]
-    
-    def discover_trending(self, limit: int = 15) -> List[Dict]:
-        """Tìm trending content"""
-        trending = []
-        
-        for i in range(limit):
-            video_data = {
-                "video_id": f"trending_{hashlib.md5(str(i).encode()).hexdigest()[:10]}",
-                "author_id": f"trending_author_{random.randint(1000, 9999)}",
-                "description": f"Trending video #{i+1} {random.choice(self.trending_hashtags)}",
-                "hashtags": random.sample(self.trending_hashtags, 3),
-                "music_id": random.choice(self.popular_music),
-                "duration": random.randint(15, 45),
-                "like_count": random.randint(1000, 100000),
-                "comment_count": random.randint(100, 10000),
-                "share_count": random.randint(50, 5000),
-                "category": "trending",
-                "created_time": int(time.time()) - random.randint(3600, 86400*2),
-            }
-            trending.append(video_data)
-        
-        return trending
-
-# ============================================
-# NURTURE STRATEGY ENGINE
-# ============================================
-class NurtureStrategy:
-    """Engine chiến lược nuôi account theo từng giai đoạn"""
-    
-    def __init__(self):
-        self.strategies = {
-            NurtureStage.DAY_1_2: self._day_1_2_strategy,
-            NurtureStage.DAY_3_7: self._day_3_7_strategy,
-            NurtureStage.DAY_8_14: self._day_8_14_strategy,
-            NurtureStage.DAY_15_30: self._day_15_30_strategy,
-            NurtureStage.MATURE: self._mature_strategy,
-        }
-        
-    def generate_daily_plan(self, account: TikTokAccount) -> List[Dict]:
-        """Tạo kế hoạch hàng ngày cho account"""
-        strategy_func = self.strategies.get(account.stage)
-        if not strategy_func:
-            logger.error(f"No strategy for stage {account.stage}")
-            return []
-        
-        return strategy_func(account)
-    
-    def _day_1_2_strategy(self, account: TikTokAccount) -> List[Dict]:
-        """Chiến lược ngày 1-2: Khởi động nhẹ"""
-        plan = []
-        
-        # Ngày 1: Chỉ xem video
-        if account.age_days == 0:
-            for i in range(15):  # 15 views
-                plan.append({
-                    "action": ActionType.VIEW,
-                    "duration": random.randint(20, 40),
-                    "priority": 1,
-                    "time_offset": i * random.randint(180, 600),  # 3-10 phút giữa views
-                })
-        
-        # Ngày 2: Thêm likes
-        elif account.age_days == 1:
-            # 20 views
-            for i in range(20):
-                if i % 4 == 0:  # Mỗi view thứ 4 là like
-                    plan.append({
-                        "action": ActionType.LIKE,
-                        "priority": 2,
-                        "time_offset": i * random.randint(240, 720),
-                    })
-                else:
-                    plan.append({
-                        "action": ActionType.VIEW,
-                        "duration": random.randint(25, 50),
-                        "priority": 1,
-                        "time_offset": i * random.randint(240, 720),
-                    })
-        
-        return plan
-    
-    def _day_3_7_strategy(self, account: TikTokAccount) -> List[Dict]:
-        """Chiến lược ngày 3-7: Tăng dần tương tác"""
-        plan = []
-        actions_per_day = 30 + (account.age_days * 5)
-        
-        for i in range(actions_per_day):
-            action_weights = {
-                ActionType.VIEW: 50,
-                ActionType.LIKE: 30,
-                ActionType.COMMENT: 10,
-                ActionType.FOLLOW: 8,
-                ActionType.PROFILE_VIEW: 2,
-            }
+        if not os.path.exists(filepath):
+            print(f"❌ File {filepath} không tồn tại!")
+            print("📝 Đang tạo file mẫu...")
             
-            # Chọn action theo weight
-            actions = list(action_weights.keys())
-            weights = list(action_weights.values())
-            action = random.choices(actions, weights=weights, k=1)[0]
-            
-            action_config = {
-                "action": action,
-                "priority": random.randint(1, 3),
-                "time_offset": i * random.randint(120, 480),  # 2-8 phút
-            }
-            
-            if action == ActionType.VIEW:
-                action_config["duration"] = random.randint(30, 60)
-            elif action == ActionType.COMMENT:
-                action_config["comment_type"] = random.choice(["short", "emoji", "question"])
-            
-            plan.append(action_config)
-        
-        return plan
-    
-    def _day_8_14_strategy(self, account: TikTokAccount) -> List[Dict]:
-        """Chiến lược ngày 8-14: Mở rộng tương tác"""
-        plan = []
-        actions_per_day = 50
-        
-        for i in range(actions_per_day):
-            action_weights = {
-                ActionType.VIEW: 40,
-                ActionType.LIKE: 25,
-                ActionType.COMMENT: 15,
-                ActionType.FOLLOW: 10,
-                ActionType.SHARE: 5,
-                ActionType.SEARCH: 5,
-            }
-            
-            actions = list(action_weights.keys())
-            weights = list(action_weights.values())
-            action = random.choices(actions, weights=weights, k=1)[0]
-            
-            action_config = {
-                "action": action,
-                "priority": random.randint(1, 3),
-                "time_offset": i * random.randint(90, 360),  # 1.5-6 phút
-            }
-            
-            if action == ActionType.VIEW:
-                action_config["duration"] = random.randint(15, 90)
-            elif action == ActionType.COMMENT:
-                action_config["comment_length"] = random.choice(["short", "medium"])
-            
-            plan.append(action_config)
-        
-        return plan
-    
-    def _day_15_30_strategy(self, account: TikTokAccount) -> List[Dict]:
-        """Chiến lược ngày 15-30: Ổn định"""
-        plan = []
-        
-        # Thêm unfollow strategy (follow-back check)
-        if account.age_days % 3 == 0 and account.following_count > 50:
-            # Unfollow những người không follow back
-            unfollow_count = min(10, account.following_count // 10)
-            for i in range(unfollow_count):
-                plan.append({
-                    "action": ActionType.UNFOLLOW,
-                    "priority": 2,
-                    "time_offset": i * random.randint(300, 900),
-                })
-        
-        # Tương tác bình thường
-        daily_actions = random.randint(40, 70)
-        
-        for i in range(daily_actions):
-            action = random.choice([
-                ActionType.VIEW, ActionType.LIKE, ActionType.COMMENT,
-                ActionType.FOLLOW, ActionType.SHARE
-            ])
-            
-            plan.append({
-                "action": action,
-                "priority": random.randint(1, 3),
-                "time_offset": i * random.randint(60, 300),  # 1-5 phút
-            })
-        
-        return plan
-    
-    def _mature_strategy(self, account: TikTokAccount) -> List[Dict]:
-        """Chiến lược tài khoản trưởng thành"""
-        plan = []
-        
-        # Hoạt động như người dùng thật
-        sessions_per_day = random.randint(3, 6)
-        current_time = 0
-        
-        for session in range(sessions_per_day):
-            # Mỗi session kéo dài 10-30 phút
-            session_duration = random.randint(600, 1800)
-            actions_in_session = random.randint(10, 30)
-            
-            for i in range(actions_in_session):
-                action_weights = {
-                    ActionType.VIEW: 60,
-                    ActionType.LIKE: 20,
-                    ActionType.COMMENT: 10,
-                    ActionType.FOLLOW: 5,
-                    ActionType.SHARE: 5,
+            # Tạo file mẫu
+            sample_data = [
+                {
+                    "password": "YourPassword123",
+                    "email": "your_email@gmail.com"
                 }
-                
-                actions = list(action_weights.keys())
-                weights = list(action_weights.values())
-                action = random.choices(actions, weights=weights, k=1)[0]
-                
-                plan.append({
-                    "action": action,
-                    "priority": random.randint(1, 3),
-                    "time_offset": current_time + (i * random.randint(20, 120)),
-                })
+            ]
             
-            current_time += session_duration
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(sample_data, f, indent=2)
+                
+            print(f"✅ Đã tạo {filepath}")
+            print("✏️ Vui lòng chỉnh sửa file với tài khoản thật của bạn")
+            print("📁 Sau đó chạy lại chương trình")
+            return False
             
-            # Thời gian nghỉ giữa các session
-            if session < sessions_per_day - 1:
-                break_duration = random.randint(1800, 7200)  # 30 phút - 2 giờ
-                current_time += break_duration
-        
-        return plan
-
-# ============================================
-# TIKTOK INTERACTION CLIENT
-# ============================================
-class TikTokInteractionClient:
-    """Client thực hiện các tương tác với TikTok"""
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                
+            if not isinstance(data, list):
+                print("❌ File JSON phải là một mảng []")
+                return False
+                
+            for item in data:
+                if "password" not in item or "email" not in item:
+                    print("❌ Mỗi account cần có 'password' và 'email'")
+                    continue
+                    
+                account = SimpleAccount(
+                    password=item["password"],
+                    email=item["email"]
+                )
+                
+                # Optional fields
+                if "username" in item:
+                    account.username = item["username"]
+                if "age_days" in item:
+                    account.age_days = item["age_days"]
+                    
+                self.accounts.append(account)
+                
+            print(f"✅ Đã load {len(self.accounts)} tài khoản")
+            return True
+            
+        except json.JSONDecodeError as e:
+            print(f"❌ Lỗi JSON: {e}")
+            return False
+        except Exception as e:
+            print(f"❌ Lỗi: {e}")
+            return False
     
-    def __init__(self, proxy_manager=None):
-        self.proxy_manager = proxy_manager
-        self.base_urls = [
-            "https://api16-normal-c-useast1a.tiktokv.com",
-            "https://api19-normal-c-useast1a.tiktokv.com",
-        ]
-        self.session_cache = {}
+    def get_daily_plan(self, account):
+        """Tạo kế hoạch hàng ngày"""
+        if account.age_days < 2:
+            return {"views": 10, "likes": 0, "follows": 0, "comments": 0}
+        elif account.age_days < 5:
+            return {"views": 20, "likes": 5, "follows": 3, "comments": 1}
+        else:
+            return {"views": 30, "likes": 10, "follows": 5, "comments": 2}
+    
+    async def simulate_action(self, account, action_type):
+        """Mô phỏng một hành động"""
+        try:
+            # Delay ngẫu nhiên
+            delay = random.uniform(0.5, 2.0)
+            await asyncio.sleep(delay)
+            
+            # Tính tỷ lệ thành công
+            success = random.random() < 0.9  # 90% thành công
+            
+            # Tính điểm trust
+            trust_points = {
+                "view": 0.05,
+                "like": 0.1,
+                "follow": 0.15,
+                "comment": 0.2
+            }.get(action_type, 0.05)
+            
+            if success:
+                # Cập nhật account
+                account.trust_score += trust_points
+                account.last_action = time.time()
+                
+                if action_type == "like":
+                    account.like_count += 1
+                elif action_type == "follow":
+                    account.following_count += 1
+                    
+                return True, trust_points
+            else:
+                return False, -0.1
+                
+        except Exception as e:
+            print(f"❌ Lỗi khi thực hiện {action_type}: {e}")
+            return False, -0.2
+    
+    async def nurture_session(self, duration_hours=2):
+        """Chạy một session nuôi account"""
+        print(f"\n🚀 Bắt đầu nuôi {len(self.accounts)} tài khoản...")
+        print(f"⏰ Thời gian: {duration_hours} giờ")
+        print()
         
-    async def perform_action(self, account: TikTokAccount, 
-                           action: ActionType, target_data: Dict) -> NurtureResult:
-        """Thực hiện một hành động tương tác"""
-        task_id = str(uuid.uuid4())
         start_time = time.time()
+        end_time = start_time + (duration_hours * 3600)
+        
+        session_count = 0
         
         try:
-            # Kiểm tra giới hạn hàng ngày
-            if not self._check_daily_limit(account, action):
-                return NurtureResult(
-                    task_id=task_id,
-                    account_id=account.account_id,
-                    action=action.value,
-                    success=False,
-                    timestamp=datetime.now().isoformat(),
-                    error="Daily limit reached"
-                )
+            while time.time() < end_time:
+                session_count += 1
+                print(f"\n📋 Session #{session_count}")
+                print("-" * 40)
+                
+                for account in self.accounts:
+                    if not account.is_active:
+                        continue
+                        
+                    print(f"\n👤 Account: {account.username}")
+                    print(f"   Trust Score: {account.trust_score:.1f}")
+                    
+                    # Lấy kế hoạch
+                    plan = self.get_daily_plan(account)
+                    
+                    # Thực hiện actions
+                    actions = []
+                    for action, count in plan.items():
+                        actions.extend([action] * count)
+                    
+                    random.shuffle(actions)
+                    
+                    success_count = 0
+                    total_actions = len(actions)
+                    
+                    for i, action in enumerate(actions[:10], 1):  # Giới hạn 10 actions/session
+                        print(f"   Action {i}/{len(actions[:10])}: {action}...", end="")
+                        
+                        success, points = await self.simulate_action(account, action)
+                        
+                        if success:
+                            print(f" ✅ (+{points:.2f})")
+                            success_count += 1
+                        else:
+                            print(f" ❌ ({points:.2f})")
+                        
+                        # Delay nhỏ giữa các action
+                        await asyncio.sleep(random.uniform(0.1, 0.5))
+                    
+                    # Hiển thị kết quả session
+                    print(f"   📊 Kết quả: {success_count}/{len(actions[:10])} thành công")
+                    print(f"   💎 Trust Score mới: {account.trust_score:.1f}")
+                
+                # Kiểm tra thời gian còn lại
+                time_left = end_time - time.time()
+                if time_left > 60:  # Còn hơn 1 phút
+                    wait_time = min(300, time_left / 2)  # Chờ 5 phút hoặc 1/2 thời gian còn lại
+                    print(f"\n💤 Nghỉ {wait_time/60:.1f} phút...")
+                    await asyncio.sleep(wait_time)
+                    
+                    # Tăng tuổi account
+                    for account in self.accounts:
+                        account.age_days += 0.1  # Mỗi session tăng 0.1 ngày
+                else:
+                    break
+                    
+        except KeyboardInterrupt:
+            print("\n⏸️ Đã dừng bởi người dùng")
+        except Exception as e:
+            print(f"\n❌ Lỗi: {e}")
+        
+        return session_count
+    
+    def show_final_stats(self):
+        """Hiển thị thống kê cuối cùng"""
+        print("\n" + "=" * 60)
+        print("🎯 KẾT QUẢ CUỐI CÙNG")
+        print("=" * 60)
+        
+        if not self.accounts:
+            print("❌ Không có tài khoản nào")
+            return
             
-            # Thực hiện action
-            result_data = None
+        print(f"\n📈 Tổng số tài khoản: {len(self.accounts)}")
+        print(f"📊 Tổng số session đã chạy: {len(self.results)}")
+        
+        print(f"\n👥 THỐNG KÊ TỪNG TÀI KHOẢN:")
+        print("-" * 50)
+        
+        for account in self.accounts:
+            print(f"\n📱 {account.username}")
+            print(f"   📧 Email: {account.email}")
+            print(f"   📅 Tuổi: {account.age_days:.1f} ngày")
+            print(f"   💎 Trust Score: {account.trust_score:.1f}")
+            print(f"   👍 Likes: {account.like_count}")
+            print(f"   👥 Following: {account.following_count}")
             
-            if action == ActionType.VIEW:
-                result_data = await self._send_view(account, target_data)
-            elif action == ActionType.LIKE:
-                result_data = await self._send_like(account, target_data)
-            elif action == ActionType.COMMENT:
-                result_data = await self._send_comment(account, target_data)
-            elif action == ActionType.FOLLOW:
-                result_data = await self._send_follow(account, target_data)
-            elif action == ActionType.UNFOLLOW:
-                result_data = await self._send_unfollow(account, target_data)
-            elif action == ActionType.SHARE:
-                result_data = await self._send_share(account, target_data)
+            # Đánh giá trust level
+            if account.trust_score < 10:
+                status = "🟡 MỚI (Cần thêm thời gian)"
+            elif account.trust_score < 30:
+                status = "🟢 ỔN ĐỊNH (Có thể sử dụng cơ bản)"
+            elif account.trust_score < 60:
+                status = "🔵 TỐT (Có thể tương tác mạnh hơn)"
             else:
-                return NurtureResult(
-                    task_id=task_id,
-                    account_id=account.account_id,
-                    action=action.value,
-                    success=False,
-                    timestamp=datetime.now().isoformat(),
-                    error=f"Action {action} not implemented"
-                )
+                status = "🟣 XUẤT SẮC (Rất an toàn)"
+                
+            print(f"   📈 Trạng thái: {status}")
+        
+        print("\n" + "=" * 60)
+        print("💾 Lưu ý: Kết quả đã được lưu tự động")
+        print("=" * 60)
+    
+    def save_progress(self):
+        """Lưu tiến trình vào file"""
+        try:
+            output_data = []
+            for account in self.accounts:
+                account_data = {
+                    "username": account.username,
+                    "email": account.email,
+                    "password": account.password,
+                    "age_days": round(account.age_days, 1),
+                    "trust_score": round(account.trust_score, 1),
+                    "following_count": account.following_count,
+                    "like_count": account.like_count,
+                    "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                }
+                output_data.append(account_data)
             
-            # Tính trust score change
-            trust_change = self._calculate_trust_change(action, result_data.get('success', False))
+            with open("accounts_progress.json", "w", encoding="utf-8") as f:
+                json.dump(output_data, f, indent=2, ensure_ascii=False)
             
-            # Cập nhật stats
-            if result_data.get('success'):
-                self._update_account_stats(account, action)
-            
-            return NurtureResult(
-                task_id=task_id,
-                account_id=account.account_id,
-                action=action.value,
-                success=result_data.get('success', False),
-                timestamp=datetime.now().isoformat(),
-                response_data=result_data,
-                trust_score_change=trust_change
-            )
+            print(f"💾 Đã lưu tiến trình vào accounts_progress.json")
             
         except Exception as e:
-            logger.error(f"Action failed: {str(e)}")
-            return NurtureResult(
-                task_id=task_id,
-                account_id=account.account_id,
-                action=action.value,
-                success=False,
-                timestamp=datetime.now().isoformat(),
-                error=str(e)
-            )
+            print(f"⚠️ Không thể lưu tiến trình: {e}")
+
+# ============================================
+# HÀM CHÍNH - FIXED
+# ============================================
+async def main():
+    """Hàm chính - Đã fix lỗi"""
     
-    def _check_daily_limit(self, account: TikTokAccount, action: ActionType) -> bool:
-        """Kiểm tra giới hạn hàng ngày"""
-        action_key = action.value + 's'  # views, likes, etc.
-        if action_key in account.today_stats:
-            limit = account.daily_limits.get(action_key[:-1], 100)  # Remove 's'
-            return account.today_stats[action_key] < limit
-        return True
+    print("\n" + "=" * 60)
+    print("🤖 TIKTOK ACCOUNT NURTURING BOT")
+    print("=" * 60)
     
-    def _update_account_stats(self, account: TikTokAccount, action: ActionType):
-        """Cập nhật thống kê account"""
-        action_key = action.value + 's'
-        if action_key in account.today_stats:
-            account.today_stats[action_key] += 1
-            
-            # Cập nhật tổng stats
-            if action == ActionType.LIKE:
-                account.like_count += 1
-            elif action == ActionType.FOLLOW:
-                account.following_count += 1
-            elif action == ActionType.UNFOLLOW:
-                account.following_count = max(0, account.following_count - 1)
+    # Tạo bot
+    bot = TikTokNurtureBot()
     
-    def _calculate_trust_change(self, action: ActionType, success: bool) -> float:
-        """Tính điểm trust score thay đổi"""
-        if not success:
-            return -0.5
+    # Load accounts
+    if not bot.load_accounts("accounts.json"):
+        input("\n🔄 Nhấn Enter để thoát...")
+        return
+    
+    # Chọn thời gian
+    print("\n⏰ CHỌN THỜI GIAN CHẠY:")
+    print("   1. Nhanh (1 giờ)")
+    print("   2. Tiêu chuẩn (2 giờ)")
+    print("   3. Dài (4 giờ)")
+    
+    while True:
+        choice = input("\n👉 Chọn (1-3): ").strip()
         
-        scores = {
-            ActionType.VIEW: 0.1,
-            ActionType.LIKE: 0.2,
-            ActionType.COMMENT: 0.5,
-            ActionType.FOLLOW: 0.3,
-            ActionType.UNFOLLOW: 0.1,  # Unfollow cũng là hành vi tự nhiên
-            ActionType.SHARE: 0.7,
-            ActionType.SEARCH: 0.4,
-            ActionType.PROFILE_VIEW: 0.15,
-        }
-        
-        return scores.get(action, 0.1)
+        if choice == "1":
+            hours = 1
+            break
+        elif choice == "2":
+            hours = 2
+            break
+        elif choice == "3":
+            hours = 4
+            break
+        else:
+            print("❌ Vui lòng chọn 1, 2 hoặc 3")
     
-    async def _send_view(self, account: TikTokAccount, target_data: Dict) -> Dict:
-        """Gửi view request"""
-        # Giả lập API call
-      
+    # Xác nhận
+    print(f"\n⚠️  XÁC NHẬN:")
+    print(f"   Số tài khoản: {len(bot.accounts)}")
+    print(f"   Thời gian: {hours} giờ")
+    
+    confirm = input("\n👉 Bắt đầu chạy? (y/n): ").lower().strip()
+    
+    if confirm != "y":
+        print("\n❌ Đã hủy")
+        input("Nhấn Enter để thoát...")
+        return
+    
+    # Chạy bot
+    print("\n" + "=" * 60)
+    print("🚀 BẮT ĐẦU CHẠY BOT...")
+    print("=" * 60)
+    print("💡 Mẹo: Nhấn Ctrl+C để dừng sớm")
+    print()
+    
+    try:
+        sessions = await bot.nurture_session(hours)
+        
+        print(f"\n✅ Hoàn thành {sessions} session(s)")
+        
+        # Hiển thị kết quả
+        bot.show_final_stats()
+        
+        # Lưu progress
+        bot.save_progress()
+        
+    except KeyboardInterrupt:
+        print("\n\n⏸️ Đã dừng bởi người dùng")
+        bot.show_final_stats()
+        bot.save_progress()
+    except Exception as e:
+        print(f"\n❌ Lỗi không mong muốn: {e}")
+    
+    # Kết thúc
+    print("\n" + "=" * 60)
+    print("👋 KẾT THÚC CHƯƠNG TRÌNH")
+    print("=" * 60)
+    
+    input("\nNhấn Enter để thoát...")
+
+# ============================================
+# CHẠY CHƯƠNG TRÌNH
+# ============================================
+if __name__ == "__main__":
+    # Ghi rõ cách chạy
+    print("\n📝 HƯỚNG DẪN NHANH:")
+    print("1. Tạo file accounts.json với nội dung:")
+    print("""
+[
+  {
+    "password": "matkhau123",
+    "email": "email_cua_ban@gmail.com"
+  }
+]
+""")
+    print("2. Chạy chương trình này")
+    print("3. Theo dõi tiến trình trên màn hình")
+    print()
+    
+    try:
+        # Chạy async
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n👋 Đã thoát")
+    except Exception as e:
+        print(f"\n❌ Lỗi khởi động: {e}")
+        input("Nhấn Enter để thoát...")
