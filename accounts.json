@@ -1,7 +1,7 @@
-// accounts.json
 [
   {
-    "password": "12032009@@Vp",
     "email": "pwhynrgtqen7@upsnab.net",
+    "username": "aletsion_01",
+    "password": "12032009@@Vp",
+    "stage": "day_1_2"
   }
-]
